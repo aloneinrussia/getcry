@@ -3,65 +3,73 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
 
-local Settings = {
+local Config = {
 	Key = "cry",
 
 	Keybinds = {
-		Aim = Enum.KeyCode.Q,
+		Camlock = Enum.KeyCode.Q,
+		SilentAim = Enum.KeyCode.Q,
 		ESP = Enum.KeyCode.E,
 		Speed = Enum.KeyCode.V,
 		Jump = Enum.KeyCode.B,
-		PanicGround = Enum.KeyCode.G,
+		PanicGround = Enum.KeyCode.G
 	},
 
-	Aim = {
-		Camlock = true,
-		SilentAim = true,
-		FOV = 150,
-		HitboxMultiplier = 2,
-		CurveBullets = true,
+	Camlock = {
+		Enabled = true,
+		TargetPart = "HumanoidRootPart",
+		Smoothness = 0.18,
+		FOV = 250
+	},
+
+	SilentAim = {
+		Enabled = true,
+		TargetPart = "HumanoidRootPart",
+		HitboxSize = Vector3.new(8, 8, 8),
+		ShowHitbox = true,
+		Transparency = 0.65
 	},
 
 	ESP = {
 		Enabled = false,
 		Color = Color3.fromRGB(255, 60, 60),
 		Transparency = 0.7,
+		ShowNames = true
 	},
 
 	Speed = {
 		Enabled = false,
 		Value = 32,
 		Minimum = 16,
-		Maximum = 100,
+		Maximum = 100
 	},
 
 	Jump = {
 		Enabled = false,
 		Value = 100,
 		Minimum = 50,
-		Maximum = 150,
+		Maximum = 150
 	},
 
-	Weapon = {
-		Enabled = true,
-		Damage = 25,
-		Range = 1000,
-		FireRate = 0.12,
-		BulletThickness = 0.08,
+	PanicGround = {
+		Offset = 4
 	}
 }
 
 local destroyed = false
-local aimEnabled = false
+local camlockEnabled = false
+local silentAimEnabled = false
 local espEnabled = false
 local speedEnabled = false
 local jumpEnabled = false
+
 local target = nil
 
 local connections = {}
+local hitboxObjects = {}
 local espObjects = {}
 local nameObjects = {}
 
@@ -72,8 +80,6 @@ local espExpanded = true
 local speedExpanded = true
 local jumpExpanded = true
 
-local lastShot = 0
-
 local function connect(signal, callback)
 	local connection = signal:Connect(callback)
 	table.insert(connections, connection)
@@ -81,29 +87,58 @@ local function connect(signal, callback)
 end
 
 local function getCharacter()
-	return player.Character
+	return Player.Character
 end
 
-local function getHumanoid(character)
-	character = character or getCharacter()
+local function getHumanoid()
+	local character = getCharacter()
 	return character and character:FindFirstChildOfClass("Humanoid")
 end
 
-local function getRoot(character)
-	character = character or getCharacter()
+local function getRoot()
+	local character = getCharacter()
 	return character and character:FindFirstChild("HumanoidRootPart")
 end
 
 local function validCharacter(character)
-	local hum = getHumanoid(character)
-	return character ~= nil and hum ~= nil and hum.Health > 0
+	if not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	return humanoid and humanoid.Health > 0
+end
+
+local function getTargetPart(character, requested)
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChild(requested)
+		or character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("Head")
+end
+
+local function destroyHitbox(character)
+	local object = hitboxObjects[character]
+
+	if object then
+		pcall(function()
+			object:Destroy()
+		end)
+
+		hitboxObjects[character] = nil
+	end
 end
 
 local function destroyESP(character)
 	if espObjects[character] then
 		for _, object in ipairs(espObjects[character]) do
 			if object then
-				object:Destroy()
+				pcall(function()
+					object:Destroy()
+				end)
 			end
 		end
 
@@ -111,13 +146,78 @@ local function destroyESP(character)
 	end
 
 	if nameObjects[character] then
-		nameObjects[character]:Destroy()
+		pcall(function()
+			nameObjects[character]:Destroy()
+		end)
+
 		nameObjects[character] = nil
 	end
 end
 
+local function createHitbox(otherPlayer)
+	if not silentAimEnabled or otherPlayer == Player then
+		return
+	end
+
+	local character = otherPlayer.Character
+
+	if not validCharacter(character) then
+		return
+	end
+
+	local targetPart = getTargetPart(
+		character,
+		Config.SilentAim.TargetPart
+	)
+
+	if not targetPart or not targetPart:IsA("BasePart") then
+		return
+	end
+
+	destroyHitbox(character)
+
+	local hitbox = Instance.new("Part")
+	hitbox.Name = "CrysSilentAimHitbox"
+	hitbox.Size = Config.SilentAim.HitboxSize
+	hitbox.CFrame = targetPart.CFrame
+	hitbox.Transparency = Config.SilentAim.ShowHitbox
+		and Config.SilentAim.Transparency
+		or 1
+	hitbox.Color = Config.ESP.Color
+	hitbox.Material = Enum.Material.ForceField
+	hitbox.CanCollide = false
+	hitbox.CanTouch = false
+	hitbox.CanQuery = true
+	hitbox.Massless = true
+	hitbox.CastShadow = false
+	hitbox.Parent = character
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = hitbox
+	weld.Part1 = targetPart
+	weld.Parent = hitbox
+
+	hitboxObjects[character] = hitbox
+end
+
+local function refreshHitboxes()
+	for character in pairs(hitboxObjects) do
+		destroyHitbox(character)
+	end
+
+	if not silentAimEnabled then
+		return
+	end
+
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer ~= Player then
+			createHitbox(otherPlayer)
+		end
+	end
+end
+
 local function createESP(otherPlayer)
-	if not espEnabled or otherPlayer == player then
+	if not espEnabled or otherPlayer == Player then
 		return
 	end
 
@@ -131,14 +231,14 @@ local function createESP(otherPlayer)
 
 	local objects = {}
 
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") then
+	for _, part in ipairs(character:GetChildren()) do
+		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
 			local box = Instance.new("BoxHandleAdornment")
-			box.Name = "CrysHitbox"
+			box.Name = "CrysESP"
 			box.Adornee = part
 			box.Size = part.Size
-			box.Color3 = Settings.ESP.Color
-			box.Transparency = Settings.ESP.Transparency
+			box.Color3 = Config.ESP.Color
+			box.Transparency = Config.ESP.Transparency
 			box.AlwaysOnTop = true
 			box.ZIndex = 10
 			box.Parent = part
@@ -149,29 +249,32 @@ local function createESP(otherPlayer)
 
 	espObjects[character] = objects
 
-	local head = character:FindFirstChild("Head") or getRoot(character)
+	if Config.ESP.ShowNames then
+		local head = character:FindFirstChild("Head")
+			or character:FindFirstChild("HumanoidRootPart")
 
-	if head then
-		local billboard = Instance.new("BillboardGui")
-		billboard.Name = "CrysPlayerName"
-		billboard.Adornee = head
-		billboard.Size = UDim2.fromOffset(200, 30)
-		billboard.StudsOffset = Vector3.new(0, 3, 0)
-		billboard.AlwaysOnTop = true
-		billboard.Parent = playerGui
+		if head then
+			local billboard = Instance.new("BillboardGui")
+			billboard.Name = "CrysName"
+			billboard.Adornee = head
+			billboard.Size = UDim2.fromOffset(200, 30)
+			billboard.StudsOffset = Vector3.new(0, 3, 0)
+			billboard.AlwaysOnTop = true
+			billboard.Parent = PlayerGui
 
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.fromScale(1, 1)
-		label.BackgroundTransparency = 1
-		label.Text = otherPlayer.DisplayName
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		label.TextStrokeTransparency = 0
-		label.Font = Enum.Font.GothamBold
-		label.TextSize = 14
-		label.Parent = billboard
+			local label = Instance.new("TextLabel")
+			label.Size = UDim2.fromScale(1, 1)
+			label.BackgroundTransparency = 1
+			label.Text = otherPlayer.DisplayName
+			label.TextColor3 = Config.ESP.Color
+			label.TextStrokeColor3 = Color3.new(0, 0, 0)
+			label.TextStrokeTransparency = 0
+			label.Font = Enum.Font.GothamBold
+			label.TextSize = 14
+			label.Parent = billboard
 
-		nameObjects[character] = billboard
+			nameObjects[character] = billboard
+		end
 	end
 end
 
@@ -180,8 +283,16 @@ local function refreshESP()
 		destroyESP(character)
 	end
 
+	for character in pairs(nameObjects) do
+		destroyESP(character)
+	end
+
+	if not espEnabled then
+		return
+	end
+
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= player then
+		if otherPlayer ~= Player then
 			createESP(otherPlayer)
 		end
 	end
@@ -195,465 +306,165 @@ local function getClosestTarget()
 	end
 
 	local viewport = camera.ViewportSize
-	local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+	local center = Vector2.new(
+		viewport.X / 2,
+		viewport.Y / 2
+	)
 
-	local closestPlayer = nil
-	local closestDistance = math.huge
+	local closest = nil
+	local closestDistance = Config.Camlock.FOV
 
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= player and validCharacter(otherPlayer.Character) then
+		if otherPlayer ~= Player then
 			local character = otherPlayer.Character
-			local targetRoot =
-				character:FindFirstChild("HumanoidRootPart")
-				or character:FindFirstChild("Head")
 
-			if targetRoot then
-				local position, visible =
-					camera:WorldToViewportPoint(targetRoot.Position)
+			if validCharacter(character) then
+				local part = getTargetPart(
+					character,
+					Config.Camlock.TargetPart
+				)
 
-				if visible and position.Z > 0 then
-					local screenPosition =
-						Vector2.new(position.X, position.Y)
+				if part then
+					local screenPosition, visible =
+						camera:WorldToViewportPoint(part.Position)
 
-					local distance =
-						(screenPosition - center).Magnitude
+					if visible and screenPosition.Z > 0 then
+						local distance = (
+							Vector2.new(
+								screenPosition.X,
+								screenPosition.Y
+							) - center
+						).Magnitude
 
-					if distance <= Settings.Aim.FOV
-						and distance < closestDistance then
-
-						closestDistance = distance
-						closestPlayer = otherPlayer
+						if distance < closestDistance then
+							closestDistance = distance
+							closest = otherPlayer
+						end
 					end
 				end
 			end
 		end
 	end
 
-	return closestPlayer
+	return closest
 end
 
-local function toggleAim()
-	aimEnabled = not aimEnabled
+local function toggleCamlock()
+	camlockEnabled = not camlockEnabled
 
-	if aimEnabled then
+	if camlockEnabled then
 		target = getClosestTarget()
+
+		if not target then
+			camlockEnabled = false
+		end
 	else
 		target = nil
 	end
+end
 
-	if aimLabel then
-		aimLabel.TextColor3 = aimEnabled
-			and Color3.fromRGB(80, 255, 120)
-			or Color3.fromRGB(255, 255, 255)
+local function toggleSilentAim()
+	silentAimEnabled = not silentAimEnabled
+	refreshHitboxes()
+end
+
+local function toggleESP()
+	espEnabled = not espEnabled
+	refreshESP()
+end
+
+local function toggleSpeed()
+	speedEnabled = not speedEnabled
+
+	local humanoid = getHumanoid()
+
+	if humanoid then
+		humanoid.WalkSpeed =
+			speedEnabled
+			and Config.Speed.Value
+			or originalWalkSpeed
 	end
 end
 
-local function getAimPoint(otherPlayer)
-	if not otherPlayer or not validCharacter(otherPlayer.Character) then
-		return nil
+local function toggleJump()
+	jumpEnabled = not jumpEnabled
+
+	local humanoid = getHumanoid()
+
+	if humanoid then
+		humanoid.JumpPower =
+			jumpEnabled
+			and Config.Jump.Value
+			or originalJumpPower
 	end
-
-	local character = otherPlayer.Character
-	local root = getRoot(character)
-	local head = character:FindFirstChild("Head")
-
-	if not root then
-		return nil
-	end
-
-	local point = head and head.Position or root.Position
-
-	if Settings.Aim.HitboxMultiplier > 1 then
-		local offset = point - root.Position
-		point = root.Position + offset * Settings.Aim.HitboxMultiplier
-	end
-
-	if Settings.Aim.CurveBullets then
-		local velocity = root.AssemblyLinearVelocity
-		local distance = (root.Position - getRoot().Position).Magnitude
-		local prediction = math.clamp(distance / 1000, 0, 0.25)
-
-		point += velocity * prediction
-	end
-
-	return point
 end
 
-local function createBullet(origin, destination)
-	local distance = (destination - origin).Magnitude
-
-	local bullet = Instance.new("Part")
-	bullet.Name = "CrysBullet"
-	bullet.Anchored = true
-	bullet.CanCollide = false
-	bullet.CanTouch = false
-	bullet.CanQuery = false
-	bullet.Material = Enum.Material.Neon
-	bullet.Size = Vector3.new(
-		Settings.Weapon.BulletThickness,
-		Settings.Weapon.BulletThickness,
-		distance
-	)
-	bullet.CFrame = CFrame.lookAt(
-		(origin + destination) / 2,
-		destination
-	)
-	bullet.Parent = workspace
-
-	task.delay(0.06, function()
-		if bullet and bullet.Parent then
-			bullet:Destroy()
-		end
-	end)
-end
-
-local function findHitCharacter(instance)
-	if not instance then
-		return nil
-	end
-
-	local model = instance:FindFirstAncestorOfClass("Model")
-
-	if not model then
-		return nil
-	end
-
-	local hum = model:FindFirstChildOfClass("Humanoid")
-
-	if not hum then
-		return nil
-	end
-
-	return model
-end
-
-local function fireWeapon()
-	if destroyed or not Settings.Weapon.Enabled then
-		return
-	end
-
-	local now = os.clock()
-
-	if now - lastShot < Settings.Weapon.FireRate then
-		return
-	end
-
-	lastShot = now
-
+local function panicGround()
 	local character = getCharacter()
-	local root = getRoot(character)
+	local root = getRoot()
 
-	if not root then
+	if not character or not root then
 		return
-	end
-
-	local camera = workspace.CurrentCamera
-
-	if not camera then
-		return
-	end
-
-	local origin = camera.CFrame.Position
-	local direction = camera.CFrame.LookVector
-
-	local destination = origin + direction * Settings.Weapon.Range
-
-	if aimEnabled and Settings.Aim.SilentAim then
-		if not target or not validCharacter(target.Character) then
-			target = getClosestTarget()
-		end
-
-		local aimPoint = getAimPoint(target)
-
-		if aimPoint then
-			destination = aimPoint
-		end
 	end
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = {
-		character
-	}
+	params.FilterDescendantsInstances = {character}
 
 	local result = workspace:Raycast(
-		origin,
-		(destination - origin).Unit * Settings.Weapon.Range,
+		root.Position,
+		Vector3.new(0, -10000, 0),
 		params
 	)
 
 	if result then
-		destination = result.Position
+		character:PivotTo(
+			CFrame.new(
+				result.Position
+					+ Vector3.new(
+						0,
+						Config.PanicGround.Offset,
+						0
+					)
+			)
+		)
 
-		local hitCharacter = findHitCharacter(result.Instance)
-
-		if hitCharacter then
-			local hum = hitCharacter:FindFirstChildOfClass("Humanoid")
-
-			if hum and hum.Health > 0 then
-				hum:TakeDamage(Settings.Weapon.Damage)
-			end
-		end
-	end
-
-	createBullet(origin, destination)
-end
-
-local loadingGui = Instance.new("ScreenGui")
-loadingGui.Name = "CrysLoading"
-loadingGui.IgnoreGuiInset = true
-loadingGui.ResetOnSpawn = false
-loadingGui.DisplayOrder = 999
-loadingGui.Parent = playerGui
-
-local background = Instance.new("Frame")
-background.Size = UDim2.fromScale(1, 1)
-background.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-background.BackgroundTransparency = 0.25
-background.BorderSizePixel = 0
-background.Parent = loadingGui
-
-local loadingContainer = Instance.new("Frame")
-loadingContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-loadingContainer.Position = UDim2.fromScale(0.5, 0.53)
-loadingContainer.Size = UDim2.fromOffset(420, 230)
-loadingContainer.BackgroundTransparency = 1
-loadingContainer.Parent = background
-
-local loadingTitle = Instance.new("TextLabel")
-loadingTitle.Size = UDim2.new(1, 0, 0, 45)
-loadingTitle.BackgroundTransparency = 1
-loadingTitle.Text = "LOADING"
-loadingTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-loadingTitle.Font = Enum.Font.GothamBold
-loadingTitle.TextSize = 30
-loadingTitle.Parent = loadingContainer
-
-local loadingStatus = Instance.new("TextLabel")
-loadingStatus.Position = UDim2.fromOffset(0, 65)
-loadingStatus.Size = UDim2.new(1, 0, 0, 30)
-loadingStatus.BackgroundTransparency = 1
-loadingStatus.TextColor3 = Color3.fromRGB(200, 200, 200)
-loadingStatus.Font = Enum.Font.Gotham
-loadingStatus.TextSize = 15
-loadingStatus.Parent = loadingContainer
-
-local loadingBarBackground = Instance.new("Frame")
-loadingBarBackground.Position = UDim2.fromOffset(60, 115)
-loadingBarBackground.Size = UDim2.fromOffset(300, 4)
-loadingBarBackground.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-loadingBarBackground.BorderSizePixel = 0
-loadingBarBackground.Parent = loadingContainer
-
-local loadingBar = Instance.new("Frame")
-loadingBar.Size = UDim2.fromScale(0, 1)
-loadingBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-loadingBar.BorderSizePixel = 0
-loadingBar.Parent = loadingBarBackground
-
-local loadingDiscord = Instance.new("TextLabel")
-loadingDiscord.Position = UDim2.fromOffset(0, 150)
-loadingDiscord.Size = UDim2.new(1, 0, 0, 25)
-loadingDiscord.BackgroundTransparency = 1
-loadingDiscord.Text = "discord.gg/NGQu84rQNr"
-loadingDiscord.TextColor3 = Color3.fromRGB(130, 130, 130)
-loadingDiscord.Font = Enum.Font.GothamMedium
-loadingDiscord.TextSize = 13
-loadingDiscord.Parent = loadingContainer
-
-local messages = {
-	"loading storage",
-	"loading scripts",
-	"loading cheats"
-}
-
-for index, message in ipairs(messages) do
-	if destroyed then
-		return
-	end
-
-	loadingStatus.Text = message
-
-	TweenService:Create(
-		loadingBar,
-		TweenInfo.new(0.8, Enum.EasingStyle.Quint),
-		{
-			Size = UDim2.fromScale(index / #messages, 1)
-		}
-	):Play()
-
-	task.wait(0.9)
-end
-
-task.wait(0.25)
-
-for _, object in ipairs({
-	background,
-	loadingTitle,
-	loadingStatus,
-	loadingBarBackground,
-	loadingBar,
-	loadingDiscord
-}) do
-	if object:IsA("Frame") then
-		TweenService:Create(
-			object,
-			TweenInfo.new(0.7),
-			{
-				BackgroundTransparency = 1
-			}
-		):Play()
-	else
-		TweenService:Create(
-			object,
-			TweenInfo.new(0.7),
-			{
-				TextTransparency = 1
-			}
-		):Play()
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
 	end
 end
 
-task.wait(0.8)
-
-loadingGui:Destroy()
-
-local keyGui = Instance.new("ScreenGui")
-keyGui.Name = "CrysKeySystem"
-keyGui.IgnoreGuiInset = true
-keyGui.ResetOnSpawn = false
-keyGui.DisplayOrder = 100
-keyGui.Parent = playerGui
-
-local keyBackground = Instance.new("Frame")
-keyBackground.Size = UDim2.fromScale(1, 1)
-keyBackground.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-keyBackground.BackgroundTransparency = 0.25
-keyBackground.BorderSizePixel = 0
-keyBackground.Parent = keyGui
-
-local keyPanel = Instance.new("Frame")
-keyPanel.AnchorPoint = Vector2.new(0.5, 0.5)
-keyPanel.Position = UDim2.fromScale(0.5, 0.55)
-keyPanel.Size = UDim2.fromOffset(430, 300)
-keyPanel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-keyPanel.BorderSizePixel = 0
-keyPanel.Parent = keyBackground
-
-local keyCorner = Instance.new("UICorner")
-keyCorner.CornerRadius = UDim.new(0, 12)
-keyCorner.Parent = keyPanel
-
-local keyStroke = Instance.new("UIStroke")
-keyStroke.Color = Color3.fromRGB(35, 35, 35)
-keyStroke.Parent = keyPanel
-
-local keyTitle = Instance.new("TextLabel")
-keyTitle.Position = UDim2.fromOffset(20, 25)
-keyTitle.Size = UDim2.new(1, -40, 0, 35)
-keyTitle.BackgroundTransparency = 1
-keyTitle.Text = "KEY SYSTEM"
-keyTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-keyTitle.Font = Enum.Font.GothamBold
-keyTitle.TextSize = 25
-keyTitle.Parent = keyPanel
-
-local keyDescription = Instance.new("TextLabel")
-keyDescription.Position = UDim2.fromOffset(20, 65)
-keyDescription.Size = UDim2.new(1, -40, 0, 30)
-keyDescription.BackgroundTransparency = 1
-keyDescription.Text = "Enter your key below to continue."
-keyDescription.TextColor3 = Color3.fromRGB(140, 140, 140)
-keyDescription.Font = Enum.Font.Gotham
-keyDescription.TextSize = 14
-keyDescription.Parent = keyPanel
-
-local keyBox = Instance.new("TextBox")
-keyBox.Position = UDim2.fromOffset(45, 110)
-keyBox.Size = UDim2.new(1, -90, 0, 45)
-keyBox.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
-keyBox.BorderSizePixel = 0
-keyBox.PlaceholderText = "Enter key..."
-keyBox.PlaceholderColor3 = Color3.fromRGB(80, 80, 80)
-keyBox.Text = ""
-keyBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-keyBox.Font = Enum.Font.Gotham
-keyBox.TextSize = 14
-keyBox.ClearTextOnFocus = false
-keyBox.Parent = keyPanel
-
-local keyBoxCorner = Instance.new("UICorner")
-keyBoxCorner.CornerRadius = UDim.new(0, 8)
-keyBoxCorner.Parent = keyBox
-
-local checkButton = Instance.new("TextButton")
-checkButton.Position = UDim2.fromOffset(45, 165)
-checkButton.Size = UDim2.new(1, -90, 0, 45)
-checkButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-checkButton.BorderSizePixel = 0
-checkButton.Text = "CHECK KEY"
-checkButton.TextColor3 = Color3.fromRGB(0, 0, 0)
-checkButton.Font = Enum.Font.GothamBold
-checkButton.TextSize = 14
-checkButton.Parent = keyPanel
-
-local checkCorner = Instance.new("UICorner")
-checkCorner.CornerRadius = UDim.new(0, 8)
-checkCorner.Parent = checkButton
-
-local keyStatus = Instance.new("TextLabel")
-keyStatus.Position = UDim2.fromOffset(45, 215)
-keyStatus.Size = UDim2.new(1, -90, 0, 25)
-keyStatus.BackgroundTransparency = 1
-keyStatus.Text = ""
-keyStatus.Font = Enum.Font.Gotham
-keyStatus.TextSize = 13
-keyStatus.Parent = keyPanel
-
-local keyDiscord = Instance.new("TextLabel")
-keyDiscord.Position = UDim2.fromOffset(45, 250)
-keyDiscord.Size = UDim2.new(1, -90, 0, 20)
-keyDiscord.BackgroundTransparency = 1
-keyDiscord.Text = "discord.gg/NGQu84rQNr"
-keyDiscord.TextColor3 = Color3.fromRGB(100, 100, 100)
-keyDiscord.Font = Enum.Font.Gotham
-keyDiscord.TextSize = 12
-keyDiscord.Parent = keyPanel
-
-local function createMainGui()
-	keyGui:Destroy()
-
+local function createGui()
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "ControlMenu"
+	gui.Name = "CrysCheats"
 	gui.IgnoreGuiInset = true
 	gui.ResetOnSpawn = false
 	gui.DisplayOrder = 9999
-	gui.Parent = playerGui
+	gui.Parent = PlayerGui
 
 	local frame = Instance.new("Frame")
 	frame.AnchorPoint = Vector2.new(0.5, 1)
 	frame.Position = UDim2.new(0.5, 0, 1, -15)
-	frame.Size = UDim2.fromOffset(390, 205)
+	frame.Size = UDim2.fromOffset(380, 220)
 	frame.BackgroundTransparency = 1
 	frame.Parent = gui
 
 	local title = Instance.new("TextLabel")
-	title.Position = UDim2.fromOffset(10, 0)
-	title.Size = UDim2.new(1, -20, 0, 25)
+	title.Size = UDim2.new(1, 0, 0, 28)
 	title.BackgroundTransparency = 1
 	title.Text = "crys cheats"
-	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.TextColor3 = Color3.new(1, 1, 1)
 	title.Font = Enum.Font.GothamBold
-	title.TextSize = 15
+	title.TextSize = 16
 	title.Parent = frame
 
-	local function createLabel(text, y)
+	local function makeLabel(text, y)
 		local label = Instance.new("TextLabel")
-		label.Position = UDim2.fromOffset(10, y)
 		label.Size = UDim2.fromOffset(180, 22)
+		label.Position = UDim2.fromOffset(10, y)
 		label.BackgroundTransparency = 1
 		label.Text = text
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.TextColor3 = Color3.new(1, 1, 1)
 		label.Font = Enum.Font.GothamMedium
 		label.TextSize = 13
 		label.TextXAlignment = Enum.TextXAlignment.Left
@@ -661,45 +472,50 @@ local function createMainGui()
 		return label
 	end
 
-	local aimLabel = createLabel(
-		"aim = " .. Settings.Keybinds.Aim.Name,
-		32
+	local camlockLabel = makeLabel(
+		"camlock = " .. Config.Keybinds.Camlock.Name,
+		35
 	)
 
-	local espLabel = createLabel(
-		"esp = " .. Settings.Keybinds.ESP.Name,
-		57
+	local silentLabel = makeLabel(
+		"silent aim = " .. Config.Keybinds.SilentAim.Name,
+		59
 	)
 
-	local speedLabel = createLabel(
-		"speed walk = " .. Settings.Keybinds.Speed.Name,
-		82
+	local espLabel = makeLabel(
+		"esp = " .. Config.Keybinds.ESP.Name,
+		83
 	)
 
-	local jumpLabel = createLabel(
-		"jump power = " .. Settings.Keybinds.Jump.Name,
+	local speedLabel = makeLabel(
+		"speed walk = " .. Config.Keybinds.Speed.Name,
 		107
 	)
 
-	local panicLabel = createLabel(
-		"panic ground = " .. Settings.Keybinds.PanicGround.Name,
-		132
+	local jumpLabel = makeLabel(
+		"jump power = " .. Config.Keybinds.Jump.Name,
+		131
 	)
 
-	local function setState(label, enabled)
-		label.TextColor3 = enabled
+	local panicLabel = makeLabel(
+		"panic ground = " .. Config.Keybinds.PanicGround.Name,
+		155
+	)
+
+	local function setState(label, state)
+		label.TextColor3 = state
 			and Color3.fromRGB(80, 255, 120)
-			or Color3.fromRGB(255, 255, 255)
+			or Color3.new(1, 1, 1)
 	end
 
-	local function makeSmallButton(text, x, y)
+	local function makeMiniButton(text, y)
 		local button = Instance.new("TextButton")
-		button.Position = UDim2.fromOffset(x, y)
 		button.Size = UDim2.fromOffset(22, 22)
-		button.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+		button.Position = UDim2.new(1, -28, 0, y)
+		button.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 		button.BorderSizePixel = 0
 		button.Text = text
-		button.TextColor3 = Color3.fromRGB(220, 220, 220)
+		button.TextColor3 = Color3.new(1, 1, 1)
 		button.Font = Enum.Font.GothamBold
 		button.TextSize = 13
 		button.Parent = frame
@@ -711,17 +527,18 @@ local function createMainGui()
 		return button
 	end
 
-	local espMin = makeSmallButton("−", 275, 57)
-	local speedMin = makeSmallButton("−", 275, 82)
-	local jumpMin = makeSmallButton("−", 275, 107)
+	local espMin = makeMiniButton("−", 83)
+	local speedMin = makeMiniButton("−", 107)
+	local jumpMin = makeMiniButton("−", 131)
 
-	local colorButton = makeSmallButton("", 305, 57)
-	colorButton.BackgroundColor3 = Settings.ESP.Color
+	local colorButton = makeMiniButton("", 83)
+	colorButton.Position = UDim2.new(1, -55, 0, 83)
+	colorButton.BackgroundColor3 = Config.ESP.Color
 
-	local function createSlider(y, minimum, maximum, value, callback)
+	local function makeSlider(y, config, callback)
 		local slider = Instance.new("Frame")
-		slider.Position = UDim2.fromOffset(145, y + 8)
 		slider.Size = UDim2.fromOffset(120, 4)
+		slider.Position = UDim2.new(1, -160, 0, y + 9)
 		slider.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 		slider.BorderSizePixel = 0
 		slider.Visible = false
@@ -729,40 +546,51 @@ local function createMainGui()
 		slider.Parent = frame
 
 		local fill = Instance.new("Frame")
-		fill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		fill.Size = UDim2.fromScale(
+			(config.Value - config.Minimum)
+				/ (config.Maximum - config.Minimum),
+			1
+		)
+		fill.BackgroundColor3 = Color3.new(1, 1, 1)
 		fill.BorderSizePixel = 0
 		fill.Parent = slider
 
 		local knob = Instance.new("Frame")
 		knob.AnchorPoint = Vector2.new(0.5, 0.5)
 		knob.Size = UDim2.fromOffset(10, 10)
-		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.Position = UDim2.new(
+			(config.Value - config.Minimum)
+				/ (config.Maximum - config.Minimum),
+			0,
+			0.5,
+			0
+		)
+		knob.BackgroundColor3 = Color3.new(1, 1, 1)
 		knob.BorderSizePixel = 0
 		knob.Parent = slider
-
-		local percent = (value - minimum) / (maximum - minimum)
-
-		fill.Size = UDim2.fromScale(percent, 1)
-		knob.Position = UDim2.new(percent, 0, 0.5, 0)
 
 		local dragging = false
 
 		local function update(x)
-			local p = math.clamp(
-				(x - slider.AbsolutePosition.X) /
-				slider.AbsoluteSize.X,
+			local percent = math.clamp(
+				(x - slider.AbsolutePosition.X)
+					/ slider.AbsoluteSize.X,
 				0,
 				1
 			)
 
-			local newValue = math.floor(
-				minimum + (maximum - minimum) * p + 0.5
+			local value = math.floor(
+				config.Minimum
+					+ (config.Maximum - config.Minimum)
+					* percent
+					+ 0.5
 			)
 
-			fill.Size = UDim2.fromScale(p, 1)
-			knob.Position = UDim2.new(p, 0, 0.5, 0)
+			config.Value = value
+			fill.Size = UDim2.fromScale(percent, 1)
+			knob.Position = UDim2.new(percent, 0, 0.5, 0)
 
-			callback(newValue)
+			callback(value)
 		end
 
 		connect(slider.InputBegan, function(input)
@@ -773,7 +601,9 @@ local function createMainGui()
 		end)
 
 		connect(UserInputService.InputChanged, function(input)
-			if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			if dragging
+				and input.UserInputType
+					== Enum.UserInputType.MouseMovement then
 				update(input.Position.X)
 			end
 		end)
@@ -787,150 +617,160 @@ local function createMainGui()
 		return slider
 	end
 
-	local speedValueLabel = Instance.new("TextLabel")
-	speedValueLabel.Position = UDim2.fromOffset(270, 77)
-	speedValueLabel.Size = UDim2.fromOffset(45, 20)
-	speedValueLabel.BackgroundTransparency = 1
-	speedValueLabel.Text = tostring(Settings.Speed.Value)
-	speedValueLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-	speedValueLabel.Font = Enum.Font.Gotham
-	speedValueLabel.TextSize = 11
-	speedValueLabel.Visible = false
-	speedValueLabel.Parent = frame
+	local speedValue = Instance.new("TextLabel")
+	speedValue.Size = UDim2.fromOffset(35, 20)
+	speedValue.Position = UDim2.new(1, -40, 0, 102)
+	speedValue.BackgroundTransparency = 1
+	speedValue.Text = tostring(Config.Speed.Value)
+	speedValue.TextColor3 = Color3.fromRGB(160, 160, 160)
+	speedValue.Font = Enum.Font.Gotham
+	speedValue.TextSize = 11
+	speedValue.Visible = false
+	speedValue.Parent = frame
 
-	local jumpValueLabel = Instance.new("TextLabel")
-	jumpValueLabel.Position = UDim2.fromOffset(270, 102)
-	jumpValueLabel.Size = UDim2.fromOffset(45, 20)
-	jumpValueLabel.BackgroundTransparency = 1
-	jumpValueLabel.Text = tostring(Settings.Jump.Value)
-	jumpValueLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-	jumpValueLabel.Font = Enum.Font.Gotham
-	jumpValueLabel.TextSize = 11
-	jumpValueLabel.Visible = false
-	jumpValueLabel.Parent = frame
+	local jumpValue = Instance.new("TextLabel")
+	jumpValue.Size = UDim2.fromOffset(35, 20)
+	jumpValue.Position = UDim2.new(1, -40, 0, 126)
+	jumpValue.BackgroundTransparency = 1
+	jumpValue.Text = tostring(Config.Jump.Value)
+	jumpValue.TextColor3 = Color3.fromRGB(160, 160, 160)
+	jumpValue.Font = Enum.Font.Gotham
+	jumpValue.TextSize = 11
+	jumpValue.Visible = false
+	jumpValue.Parent = frame
 
-	local speedSlider = createSlider(
-		82,
-		Settings.Speed.Minimum,
-		Settings.Speed.Maximum,
-		Settings.Speed.Value,
+	local speedSlider = makeSlider(
+		107,
+		Config.Speed,
 		function(value)
-			Settings.Speed.Value = value
-			speedValueLabel.Text = tostring(value)
+			speedValue.Text = tostring(value)
 
 			if speedEnabled then
-				local hum = getHumanoid()
+				local humanoid = getHumanoid()
 
-				if hum then
-					hum.WalkSpeed = value
+				if humanoid then
+					humanoid.WalkSpeed = value
 				end
 			end
 		end
 	)
 
-	local jumpSlider = createSlider(
-		107,
-		Settings.Jump.Minimum,
-		Settings.Jump.Maximum,
-		Settings.Jump.Value,
+	local jumpSlider = makeSlider(
+		131,
+		Config.Jump,
 		function(value)
-			Settings.Jump.Value = value
-			jumpValueLabel.Text = tostring(value)
+			jumpValue.Text = tostring(value)
 
 			if jumpEnabled then
-				local hum = getHumanoid()
+				local humanoid = getHumanoid()
 
-				if hum then
-					hum.JumpPower = value
+				if humanoid then
+					humanoid.JumpPower = value
 				end
 			end
 		end
 	)
 
-	local picker = Instance.new("Frame")
-	picker.Position = UDim2.fromOffset(90, -105)
-	picker.Size = UDim2.fromOffset(210, 130)
-	picker.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
-	picker.BorderSizePixel = 0
-	picker.Visible = false
-	picker.Parent = frame
+	local colorPicker = Instance.new("Frame")
+	colorPicker.Size = UDim2.fromOffset(210, 130)
+	colorPicker.Position = UDim2.new(1, -265, 0, -105)
+	colorPicker.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+	colorPicker.BorderSizePixel = 0
+	colorPicker.Visible = false
+	colorPicker.Parent = frame
 
 	local pickerCorner = Instance.new("UICorner")
 	pickerCorner.CornerRadius = UDim.new(0, 8)
-	pickerCorner.Parent = picker
+	pickerCorner.Parent = colorPicker
 
 	local pickerTitle = Instance.new("TextLabel")
-	picker.Position = UDim2.fromOffset(10, 8)
-	picker.Size = UDim2.new(1, -20, 0, 20)
-	picker.BackgroundTransparency = 1
-	picker.Text = "ESP COLOR"
-	picker.TextColor3 = Color3.fromRGB(255, 255, 255)
-	picker.Font = Enum.Font.GothamBold
-	picker.TextSize = 12
-	picker.TextXAlignment = Enum.TextXAlignment.Left
-	picker.Parent = picker
-
-	local boxes = {}
+	pickerTitle.Size = UDim2.new(1, -20, 0, 25)
+	pickerTitle.Position = UDim2.fromOffset(10, 5)
+	pickerTitle.BackgroundTransparency = 1
+	pickerTitle.Text = "ESP / HITBOX COLOR"
+	pickerTitle.TextColor3 = Color3.new(1, 1, 1)
+	pickerTitle.Font = Enum.Font.GothamBold
+	pickerTitle.TextSize = 12
+	pickerTitle.TextXAlignment = Enum.TextXAlignment.Left
+	pickerTitle.Parent = colorPicker
 
 	local function createRGBBox(letter, value, y)
 		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromOffset(20, 22)
 		label.Position = UDim2.fromOffset(10, y)
-		label.Size = UDim2.fromOffset(20, 20)
 		label.BackgroundTransparency = 1
 		label.Text = letter
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.TextColor3 = Color3.new(1, 1, 1)
 		label.Font = Enum.Font.GothamBold
 		label.TextSize = 11
-		label.Parent = picker
+		label.Parent = colorPicker
 
 		local box = Instance.new("TextBox")
+		box.Size = UDim2.fromOffset(155, 22)
 		box.Position = UDim2.fromOffset(35, y)
-		box.Size = UDim2.fromOffset(155, 20)
 		box.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 		box.BorderSizePixel = 0
 		box.Text = tostring(value)
-		box.TextColor3 = Color3.fromRGB(255, 255, 255)
+		box.TextColor3 = Color3.new(1, 1, 1)
 		box.Font = Enum.Font.Gotham
 		box.TextSize = 11
 		box.ClearTextOnFocus = false
-		box.Parent = picker
+		box.Parent = colorPicker
 
-		boxes[letter] = box
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 5)
+		corner.Parent = box
+
+		return box
 	end
 
-	createRGBBox("R", 255, 34)
-	createRGBBox("G", 60, 59)
-	createRGBBox("B", 60, 84)
+	local redBox = createRGBBox("R", 255, 35)
+	local greenBox = createRGBBox("G", 60, 63)
+	local blueBox = createRGBBox("B", 60, 91)
 
 	local function updateColor()
-		local r = math.clamp(tonumber(boxes.R.Text) or 255, 0, 255)
-		local g = math.clamp(tonumber(boxes.G.Text) or 60, 0, 255)
-		local b = math.clamp(tonumber(boxes.B.Text) or 60, 0, 255)
+		local r = math.clamp(
+			tonumber(redBox.Text) or 255,
+			0,
+			255
+		)
 
-		Settings.ESP.Color = Color3.fromRGB(r, g, b)
-		colorButton.BackgroundColor3 = Settings.ESP.Color
+		local g = math.clamp(
+			tonumber(greenBox.Text) or 60,
+			0,
+			255
+		)
 
-		if espEnabled then
-			refreshESP()
-		end
+		local b = math.clamp(
+			tonumber(blueBox.Text) or 60,
+			0,
+			255
+		)
+
+		Config.ESP.Color = Color3.fromRGB(r, g, b)
+		colorButton.BackgroundColor3 = Config.ESP.Color
+
+		refreshESP()
+		refreshHitboxes()
 	end
 
-	connect(boxes.R.FocusLost, updateColor)
-	connect(boxes.G.FocusLost, updateColor)
-	connect(boxes.B.FocusLost, updateColor)
+	connect(redBox.FocusLost, updateColor)
+	connect(greenBox.FocusLost, updateColor)
+	connect(blueBox.FocusLost, updateColor)
 
 	connect(colorButton.MouseButton1Click, function()
-		picker.Visible = not picker.Visible
+		colorPicker.Visible = not colorPicker.Visible
 	end)
 
 	connect(espMin.MouseButton1Click, function()
 		espExpanded = not espExpanded
 		espMin.Text = espExpanded and "−" or "+"
 
-		colorButton.Visible = espEnabled and espExpanded
+		colorButton.Visible =
+			espEnabled and espExpanded
 
 		if not espExpanded then
-			picker.Visible = false
+			colorPicker.Visible = false
 		end
 	end)
 
@@ -938,135 +778,79 @@ local function createMainGui()
 		speedExpanded = not speedExpanded
 		speedMin.Text = speedExpanded and "−" or "+"
 
-		speedSlider.Visible = speedEnabled and speedExpanded
-		speedValueLabel.Visible = speedEnabled and speedExpanded
+		speedSlider.Visible =
+			speedEnabled and speedExpanded
+
+		speedValue.Visible =
+			speedEnabled and speedExpanded
 	end)
 
 	connect(jumpMin.MouseButton1Click, function()
 		jumpExpanded = not jumpExpanded
 		jumpMin.Text = jumpExpanded and "−" or "+"
 
-		jumpSlider.Visible = jumpEnabled and jumpExpanded
-		jumpValueLabel.Visible = jumpEnabled and jumpExpanded
+		jumpSlider.Visible =
+			jumpEnabled and jumpExpanded
+
+		jumpValue.Visible =
+			jumpEnabled and jumpExpanded
 	end)
 
-	connect(UserInputService.InputBegan, function(input, gameProcessed)
-		if destroyed or gameProcessed then
+	connect(UserInputService.InputBegan, function(input, processed)
+		if destroyed or processed then
 			return
 		end
 
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			fireWeapon()
-			return
+		if input.KeyCode == Config.Keybinds.Camlock then
+			toggleCamlock()
 		end
 
-		if input.KeyCode == Settings.Keybinds.Aim then
-			toggleAim()
+		if input.KeyCode == Config.Keybinds.SilentAim then
+			toggleSilentAim()
+		end
 
-		elseif input.KeyCode == Settings.Keybinds.ESP then
-			espEnabled = not espEnabled
-			setState(espLabel, espEnabled)
+		if input.KeyCode == Config.Keybinds.ESP then
+			toggleESP()
+		end
 
-			colorButton.Visible = espEnabled and espExpanded
-			espMin.Visible = espEnabled
+		if input.KeyCode == Config.Keybinds.Speed then
+			toggleSpeed()
+		end
 
-			if espEnabled then
-				refreshESP()
-			else
-				picker.Visible = false
+		if input.KeyCode == Config.Keybinds.Jump then
+			toggleJump()
+		end
 
-				for character in pairs(espObjects) do
-					destroyESP(character)
-				end
-			end
+		if input.KeyCode == Config.Keybinds.PanicGround then
+			panicGround()
+		end
 
-		elseif input.KeyCode == Settings.Keybinds.Speed then
-			speedEnabled = not speedEnabled
-			setState(speedLabel, speedEnabled)
-
-			speedSlider.Visible = speedEnabled and speedExpanded
-			speedValueLabel.Visible = speedEnabled and speedExpanded
-
-			local hum = getHumanoid()
-
-			if hum then
-				hum.WalkSpeed = speedEnabled
-					and Settings.Speed.Value
-					or originalWalkSpeed
-			end
-
-		elseif input.KeyCode == Settings.Keybinds.Jump then
-			jumpEnabled = not jumpEnabled
-			setState(jumpLabel, jumpEnabled)
-
-			jumpSlider.Visible = jumpEnabled and jumpExpanded
-			jumpValueLabel.Visible = jumpEnabled and jumpExpanded
-
-			local hum = getHumanoid()
-
-			if hum then
-				hum.JumpPower = jumpEnabled
-					and Settings.Jump.Value
-					or originalJumpPower
-			end
-
-		elseif input.KeyCode == Settings.Keybinds.PanicGround then
-			local rootPart = getRoot()
-
-			if rootPart then
-				local params = RaycastParams.new()
-				params.FilterType = Enum.RaycastFilterType.Exclude
-				params.FilterDescendantsInstances = {
-					getCharacter()
-				}
-
-				local result = workspace:Raycast(
-					rootPart.Position,
-					Vector3.new(0, -10000, 0),
-					params
-				)
-
-				if result then
-					getCharacter():PivotTo(
-						CFrame.new(
-							result.Position + Vector3.new(0, 4, 0)
-						)
-					)
-
-					rootPart.AssemblyLinearVelocity = Vector3.zero
-					rootPart.AssemblyAngularVelocity = Vector3.zero
-				end
-			end
+		if input.KeyCode == Enum.KeyCode.F8 then
+			destroyed = true
 		end
 	end)
 
-	connect(player.CharacterAdded, function(character)
+	connect(Player.CharacterAdded, function()
 		task.wait(0.5)
 
-		local hum = getHumanoid(character)
+		local humanoid = getHumanoid()
 
-		if hum then
+		if humanoid then
 			if speedEnabled then
-				hum.WalkSpeed = Settings.Speed.Value
+				humanoid.WalkSpeed = Config.Speed.Value
+			else
+				originalWalkSpeed = humanoid.WalkSpeed
 			end
 
 			if jumpEnabled then
-				hum.JumpPower = Settings.Jump.Value
+				humanoid.JumpPower = Config.Jump.Value
+			else
+				originalJumpPower = humanoid.JumpPower
 			end
 		end
+
+		refreshHitboxes()
 	end)
-
-	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= player then
-			connect(otherPlayer.CharacterAdded, function()
-				task.wait(0.5)
-
-				if espEnabled then
-					createESP(otherPlayer)
-				end
-			end)
-		end
-	end
 
 	connect(Players.PlayerAdded, function(otherPlayer)
 		connect(otherPlayer.CharacterAdded, function()
@@ -1075,50 +859,59 @@ local function createMainGui()
 			if espEnabled then
 				createESP(otherPlayer)
 			end
+
+			if silentAimEnabled then
+				createHitbox(otherPlayer)
+			end
 		end)
 	end)
 
 	connect(Players.PlayerRemoving, function(otherPlayer)
+		if otherPlayer.Character then
+			destroyESP(otherPlayer.Character)
+			destroyHitbox(otherPlayer.Character)
+		end
+
 		if target == otherPlayer then
 			target = nil
 		end
 	end)
 
-	connect(UserInputService.InputBegan, function(input)
-		if input.KeyCode ~= Enum.KeyCode.F8 or destroyed then
-			return
-		end
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer ~= Player then
+			connect(otherPlayer.CharacterAdded, function()
+				task.wait(0.5)
 
-		destroyed = true
-		aimEnabled = false
-		espEnabled = false
-		speedEnabled = false
-		jumpEnabled = false
-		target = nil
+				if espEnabled then
+					createESP(otherPlayer)
+				end
 
-		pcall(function()
-			RunService:UnbindFromRenderStep("CrysCamlock")
-		end)
-
-		for character in pairs(espObjects) do
-			destroyESP(character)
-		end
-
-		for _, connection in ipairs(connections) do
-			pcall(function()
-				connection:Disconnect()
+				if silentAimEnabled then
+					createHitbox(otherPlayer)
+				end
 			end)
 		end
+	end
 
-		local hum = getHumanoid()
+	task.spawn(function()
+		while not destroyed do
+			task.wait(0.15)
 
-		if hum then
-			hum.WalkSpeed = originalWalkSpeed
-			hum.JumpPower = originalJumpPower
-		end
+			if silentAimEnabled then
+				for _, otherPlayer in ipairs(Players:GetPlayers()) do
+					if otherPlayer ~= Player then
+						local character = otherPlayer.Character
 
-		if gui and gui.Parent then
-			gui:Destroy()
+						if validCharacter(character) then
+							local hitbox = hitboxObjects[character]
+
+							if not hitbox then
+								createHitbox(otherPlayer)
+							end
+						end
+					end
+				end
+			end
 		end
 	end)
 
@@ -1126,59 +919,91 @@ local function createMainGui()
 		"CrysCamlock",
 		Enum.RenderPriority.Camera.Value + 1,
 		function()
-			if destroyed or not aimEnabled or not Settings.Aim.Camlock then
+			if destroyed or not camlockEnabled then
 				return
 			end
 
-			if not target or not validCharacter(target.Character) then
+			if not target
+				or not validCharacter(target.Character) then
 				target = getClosestTarget()
 			end
 
 			if not target then
+				camlockEnabled = false
 				return
 			end
 
-			local targetRoot =
-				target.Character:FindFirstChild("HumanoidRootPart")
-				or target.Character:FindFirstChild("Head")
+			local character = target.Character
+			local part = getTargetPart(
+				character,
+				Config.Camlock.TargetPart
+			)
 
 			local camera = workspace.CurrentCamera
 
-			if targetRoot and camera then
-				camera.CFrame = CFrame.lookAt(
+			if part and camera then
+				local desired = CFrame.lookAt(
 					camera.CFrame.Position,
-					targetRoot.Position
+					part.Position
 				)
+
+				camera.CFrame =
+					camera.CFrame:Lerp(
+						desired,
+						Config.Camlock.Smoothness
+					)
 			end
 		end
 	)
 
-	setState(aimLabel, false)
-	setState(espLabel, false)
-	setState(speedLabel, false)
-	setState(jumpLabel, false)
-
-	espMin.Visible = false
-	speedMin.Visible = false
-	jumpMin.Visible = false
-	colorButton.Visible = false
-
 	return gui
 end
 
-connect(checkButton.MouseButton1Click, function()
-	if keyBox.Text ~= Settings.Key then
-		keyStatus.Text = "Invalid key."
-		keyStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+local humanoid = getHumanoid()
+
+if humanoid then
+	originalWalkSpeed = humanoid.WalkSpeed
+	originalJumpPower = humanoid.JumpPower
+end
+
+local gui = createGui()
+
+local function updateLabels()
+	local frame = gui:FindFirstChildOfClass("Frame")
+
+	if not frame then
 		return
 	end
 
-	keyStatus.Text = "Key accepted!"
-	keyStatus.TextColor3 = Color3.fromRGB(80, 255, 120)
-
-	task.wait(0.4)
-
-	if not destroyed then
-		createMainGui()
+	for _, object in ipairs(frame:GetChildren()) do
+		if object:IsA("TextLabel") then
+			if object.Text:match("^camlock") then
+				object.Text =
+					"camlock = "
+					.. Config.Keybinds.Camlock.Name
+			elseif object.Text:match("^silent aim") then
+				object.Text =
+					"silent aim = "
+					.. Config.Keybinds.SilentAim.Name
+			elseif object.Text:match("^esp") then
+				object.Text =
+					"esp = "
+					.. Config.Keybinds.ESP.Name
+			elseif object.Text:match("^speed walk") then
+				object.Text =
+					"speed walk = "
+					.. Config.Keybinds.Speed.Name
+			elseif object.Text:match("^jump power") then
+				object.Text =
+					"jump power = "
+					.. Config.Keybinds.Jump.Name
+			elseif object.Text:match("^panic ground") then
+				object.Text =
+					"panic ground = "
+					.. Config.Keybinds.PanicGround.Name
+			end
+		end
 	end
-end)
+end
+
+updateLabels()
